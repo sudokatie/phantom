@@ -78,8 +78,68 @@ pub const OP = struct {
     pub const call_frame_cfa: u8 = 0x9c;
 };
 
+// Line number program opcodes
+pub const LNS = struct {
+    pub const copy: u8 = 1;
+    pub const advance_pc: u8 = 2;
+    pub const advance_line: u8 = 3;
+    pub const set_file: u8 = 4;
+    pub const set_column: u8 = 5;
+    pub const negate_stmt: u8 = 6;
+    pub const set_basic_block: u8 = 7;
+    pub const const_add_pc: u8 = 8;
+    pub const fixed_advance_pc: u8 = 9;
+    pub const set_prologue_end: u8 = 10;
+    pub const set_epilogue_begin: u8 = 11;
+    pub const set_isa: u8 = 12;
+};
+
+// Extended line number opcodes
+pub const LNE = struct {
+    pub const end_sequence: u8 = 1;
+    pub const set_address: u8 = 2;
+    pub const define_file: u8 = 3;
+    pub const set_discriminator: u8 = 4;
+};
+
+// Call frame information
+pub const CFA = struct {
+    pub const advance_loc: u8 = 0x40;
+    pub const offset: u8 = 0x80;
+    pub const restore: u8 = 0xc0;
+    pub const nop: u8 = 0x00;
+    pub const set_loc: u8 = 0x01;
+    pub const advance_loc1: u8 = 0x02;
+    pub const advance_loc2: u8 = 0x03;
+    pub const advance_loc4: u8 = 0x04;
+    pub const offset_extended: u8 = 0x05;
+    pub const restore_extended: u8 = 0x06;
+    pub const undefined: u8 = 0x07;
+    pub const same_value: u8 = 0x08;
+    pub const register: u8 = 0x09;
+    pub const remember_state: u8 = 0x0a;
+    pub const restore_state: u8 = 0x0b;
+    pub const def_cfa: u8 = 0x0c;
+    pub const def_cfa_register: u8 = 0x0d;
+    pub const def_cfa_offset: u8 = 0x0e;
+    pub const def_cfa_expression: u8 = 0x0f;
+    pub const expression: u8 = 0x10;
+    pub const val_offset: u8 = 0x14;
+    pub const val_expression: u8 = 0x16;
+};
+
 test "dwarf constants" {
     try std.testing.expect(TAG.compile_unit == 0x11);
     try std.testing.expect(AT.name == 0x03);
     try std.testing.expect(FORM.addr == 0x01);
+}
+
+test "line number opcodes" {
+    try std.testing.expect(LNS.copy == 1);
+    try std.testing.expect(LNE.end_sequence == 1);
+}
+
+test "cfa opcodes" {
+    try std.testing.expect(CFA.nop == 0);
+    try std.testing.expect(CFA.def_cfa == 0x0c);
 }
