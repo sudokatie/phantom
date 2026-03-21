@@ -166,9 +166,59 @@ pub const Elf = struct {
         const section = self.sections.get(name) orelse return null;
         return self.data[section.offset..][0..section.size];
     }
+
+    /// Find symbol containing an address.
+    pub fn symbolAt(self: *Self, addr: u64) ?Symbol {
+        var best: ?Symbol = null;
+        var it = self.symbols.valueIterator();
+        while (it.next()) |sym| {
+            if (sym.value <= addr and addr < sym.value + sym.size) {
+                // Exact match
+                return sym.*;
+            }
+            // Track closest symbol before address
+            if (sym.value <= addr) {
+                if (best) |b| {
+                    if (sym.value > b.value) {
+                        best = sym.*;
+                    }
+                } else {
+                    best = sym.*;
+                }
+            }
+        }
+        return best;
+    }
+
+    /// Check if a section exists.
+    pub fn hasSection(self: *Self, name: []const u8) bool {
+        return self.sections.contains(name);
+    }
+
+    /// Check if debug info is available.
+    pub fn hasDebugInfo(self: *Self) bool {
+        return self.hasSection(".debug_info");
+    }
 };
+
+// Symbol types
+pub const STT_NOTYPE: u8 = 0;
+pub const STT_OBJECT: u8 = 1;
+pub const STT_FUNC: u8 = 2;
+pub const STT_SECTION: u8 = 3;
+pub const STT_FILE: u8 = 4;
+
+// Symbol bindings
+pub const STB_LOCAL: u8 = 0;
+pub const STB_GLOBAL: u8 = 1;
+pub const STB_WEAK: u8 = 2;
 
 test "elf magic check" {
     const bad_data = [_]u8{ 0, 0, 0, 0 };
     try std.testing.expect(!std.mem.eql(u8, &bad_data, "\x7fELF"));
+}
+
+test "symbol types" {
+    try std.testing.expect(STT_FUNC == 2);
+    try std.testing.expect(STB_GLOBAL == 1);
 }
