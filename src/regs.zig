@@ -142,3 +142,19 @@ test "registers DWARF mapping" {
     regs.rax = 42;
     try std.testing.expect(regs.getByDwarfNum(0).? == 42);
 }
+
+test "registers set" {
+    var regs = std.mem.zeroes(Registers);
+    try regs.set("rax", 0x1234);
+    try std.testing.expect(regs.rax == 0x1234);
+}
+
+test "registers set invalid" {
+    var regs = std.mem.zeroes(Registers);
+    try std.testing.expectError(error.UnknownRegister, regs.set("invalid", 0));
+}
+
+test "dwarf register names" {
+    try std.testing.expect(std.mem.eql(u8, dwarf_reg_names[0], "rax"));
+    try std.testing.expect(std.mem.eql(u8, dwarf_reg_names[16], "rip"));
+}

@@ -272,3 +272,20 @@ test "process state enum" {
     const state = ProcessState.stopped;
     try std.testing.expect(state == .stopped);
 }
+
+test "wait result struct" {
+    const result = WaitResult{
+        .state = .exited,
+        .signal = null,
+        .exit_code = 0,
+    };
+    try std.testing.expect(result.state == .exited);
+    try std.testing.expect(result.exit_code.? == 0);
+}
+
+test "process state transitions" {
+    // Test that all states are distinct
+    try std.testing.expect(ProcessState.stopped != ProcessState.running);
+    try std.testing.expect(ProcessState.running != ProcessState.exited);
+    try std.testing.expect(ProcessState.exited != ProcessState.signaled);
+}
