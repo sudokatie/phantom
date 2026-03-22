@@ -14,12 +14,14 @@ It's educational - see how GDB works under the hood.
 
 ## Features
 
-- Process control (attach, detach, continue, step)
-- Software breakpoints
-- Register inspection
-- Memory read/write
-- DWARF symbol lookup
-- Stack traces
+- Process control (attach, detach, continue, step, next)
+- Software breakpoints (by address or symbol name)
+- Register and memory inspection
+- Stack unwinding with backtrace
+- DWARF debug info parsing (abbreviations, DIEs, line numbers)
+- Location expression evaluation
+- Call frame information (CFI) for stack unwinding
+- Expression evaluator for variable inspection
 
 ## Quick Start
 
@@ -37,14 +39,20 @@ zig build
 ## Commands
 
 ```
+run [args]        Start program with arguments
 continue, c       Continue execution
-step, s           Single step instruction
-break <addr>      Set breakpoint at address
-break <func>      Set breakpoint at function
+step, s           Single step (into functions)
+next, n           Step over (same as step for now)
+break <loc>       Set breakpoint (address or symbol)
 delete <n>        Delete breakpoint
+backtrace, bt     Show call stack
+frame <n>         Select stack frame
+print <expr>      Print expression/variable
+x <addr>          Examine memory at address
 info registers    Show registers
 info breakpoints  List breakpoints
-quit              Exit debugger
+info locals       Show local variables
+quit, q           Exit debugger
 ```
 
 ## Requirements
@@ -63,10 +71,18 @@ phantom/
 │   ├── debugger.zig    Debugger state machine
 │   ├── process.zig     ptrace operations
 │   ├── breakpoint.zig  Breakpoint management
-│   ├── dwarf/          DWARF parser
+│   ├── eval.zig        Expression evaluator
 │   ├── elf.zig         ELF parsing
 │   ├── regs.zig        Register handling
-│   └── cli.zig         Command interface
+│   ├── cli.zig         Command interface
+│   └── dwarf/
+│       ├── mod.zig     DWARF module exports
+│       ├── types.zig   DWARF constants
+│       ├── abbrev.zig  Abbreviation table parser
+│       ├── info.zig    .debug_info DIE parser
+│       ├── line.zig    Line number program
+│       ├── expr.zig    Location expression evaluator
+│       └── frame.zig   Call frame information
 └── build.zig
 ```
 
