@@ -39,26 +39,34 @@ zig build
 ## Commands
 
 ```
-run [args]        Start program with arguments
-continue, c       Continue execution
-step, s           Single step (into functions)
-next, n           Step over (same as step for now)
-break <loc>       Set breakpoint (address or symbol)
-delete <n>        Delete breakpoint
-backtrace, bt     Show call stack
-frame <n>         Select stack frame
-print <expr>      Print expression/variable
-x <addr>          Examine memory at address
-info registers    Show registers
-info breakpoints  List breakpoints
-info locals       Show local variables
-quit, q           Exit debugger
+Running:
+  run, r [args]     Start/restart program with arguments
+  continue, c       Continue execution until breakpoint or exit
+  step, s           Single step (into functions)
+  next, n           Step over (same as step for now)
+  quit, q           Detach and exit debugger
+
+Breakpoints:
+  break, b <loc>    Set breakpoint (address or symbol name)
+  delete, d <n>     Delete breakpoint by number
+  info breakpoints  List all breakpoints
+
+Inspection:
+  backtrace, bt     Show call stack with symbols
+  frame, f <n>      Select stack frame for inspection
+  print, p <expr>   Print variable or expression
+  x <addr>          Examine memory at address
+  info registers    Show CPU registers
+  info locals       Show local variables
+  help, h           Show all commands
 ```
+
+Press Enter to repeat the last command. Ctrl+C interrupts the debuggee, not the debugger.
 
 ## Requirements
 
 - Linux (x86-64)
-- Zig 0.14+
+- Zig 0.15+
 - Root or CAP_SYS_PTRACE capability
 - Debug symbols in target binary (-g)
 

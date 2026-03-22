@@ -28,9 +28,21 @@ pub const Cli = struct {
         const stdout = std.io.getStdOut().writer();
 
         var buf: [1024]u8 = undefined;
+        var last_cmd: []const u8 = "";
+        var last_cmd_buf: [1024]u8 = undefined;
 
         while (self.running) {
-            try stdout.print("(phantom) ", .{});
+            // Show process state in prompt if stopped
+            if (self.debugger.process) |p| {
+                switch (p.state) {
+                    .stopped => try stdout.print("(phantom) ", .{}),
+                    .running => try stdout.print("(phantom:running) ", .{}),
+                    .exited => try stdout.print("(phantom:exited) ", .{}),
+                    .signaled => try stdout.print("(phantom:killed) ", .{}),
+                }
+            } else {
+                try stdout.print("(phantom) ", .{});
+            }
 
             const line = stdin.readUntilDelimiter(&buf, '\n') catch |err| {
                 if (err == error.EndOfStream) {
@@ -41,12 +53,43 @@ pub const Cli = struct {
             };
 
             const trimmed = std.mem.trim(u8, line, " \t\r\n");
-            if (trimmed.len == 0) continue;
 
-            self.executeCommand(trimmed) catch |err| {
-                try stdout.print("error: {}\n", .{err});
+            // Empty line repeats last command (like gdb)
+            const cmd_to_run = if (trimmed.len == 0) last_cmd else blk: {
+                @memcpy(last_cmd_buf[0..trimmed.len], trimmed);
+                last_cmd = last_cmd_buf[0..trimmed.len];
+                break :blk trimmed;
+            };
+
+            if (cmd_to_run.len == 0) continue;
+
+            self.executeCommand(cmd_to_run) catch |err| {
+                self.printError(stdout, err);
             };
         }
+    }
+
+    /// Print a human-readable error message.
+    fn printError(self: *Self, writer: anytype, err: anyerror) void {
+        _ = self;
+        const msg = switch (err) {
+            error.NoProcess => "no process - use 'run' or 'attach' first",
+            error.AttachFailed => "attach failed - check permissions (may need root or CAP_SYS_PTRACE)",
+            error.DetachFailed => "detach failed - process may have already exited",
+            error.ContinueFailed => "continue failed - process may have already exited",
+            error.SingleStepFailed => "single step failed - process may have already exited",
+            error.GetRegsFailed => "cannot read registers - process may have already exited",
+            error.SetRegsFailed => "cannot write registers - permission denied",
+            error.WriteMemoryFailed => "cannot write memory - permission denied or invalid address",
+            error.WaitFailed => "wait failed - process may have already exited",
+            error.NoProgramLoaded => "no program loaded - specify a program to debug",
+            error.UnsupportedOS => "unsupported OS - phantom requires Linux",
+            else => {
+                writer.print("error: {}\n", .{err}) catch {};
+                return;
+            },
+        };
+        writer.print("error: {s}\n", .{msg}) catch {};
     }
 
     /// Execute a single command.
@@ -57,8 +100,37 @@ pub const Cli = struct {
         const cmd = it.next() orelse return;
 
         if (std.mem.eql(u8, cmd, "quit") or std.mem.eql(u8, cmd, "q")) {
+            // Clean up the process before exiting
+            if (self.debugger.process) |*p| {
+                if (p.state == .running or p.state == .stopped) {
+                    self.debugger.detach() catch {
+                        // If detach fails, the process might have already exited
+                    };
+                    try stdout.print("Detached from process {d}.\n", .{p.pid});
+                }
+            }
             self.running = false;
-            try stdout.print("Quitting.\n", .{});
+            try stdout.print("Goodbye.\n", .{});
+        } else if (std.mem.eql(u8, cmd, "run") or std.mem.eql(u8, cmd, "r")) {
+            // Run/restart the program from the CLI
+            if (self.debugger.program_path == null) {
+                try stdout.print("No program loaded. Use 'phantom <program>' to start.\n", .{});
+                return;
+            }
+            // If already running, ask to restart
+            if (self.debugger.process) |*p| {
+                if (p.state == .running or p.state == .stopped) {
+                    try stdout.print("Program is already running. Use 'continue' or 'quit' first.\n", .{});
+                    return;
+                }
+            }
+            // Collect args from rest of command line
+            var args_list = std.ArrayList([]const u8).init(self.allocator);
+            defer args_list.deinit();
+            while (it.next()) |arg| {
+                try args_list.append(arg);
+            }
+            try self.debugger.run(args_list.items);
         } else if (std.mem.eql(u8, cmd, "continue") or std.mem.eql(u8, cmd, "c")) {
             try self.debugger.continue_();
             try stdout.print("Continuing.\n", .{});
@@ -67,9 +139,39 @@ pub const Cli = struct {
             if (self.debugger.process) |*p| {
                 const result = try p.wait();
                 switch (result.state) {
-                    .stopped => try stdout.print("Stopped (signal {?})\n", .{result.signal}),
-                    .exited => try stdout.print("Exited with code {?}\n", .{result.exit_code}),
-                    .signaled => try stdout.print("Killed by signal {?}\n", .{result.signal}),
+                    .stopped => {
+                        const sig = result.signal orelse 0;
+                        if (sig == 5) {
+                            // SIGTRAP - likely breakpoint
+                            const pc = self.debugger.getPC() catch 0;
+                            try stdout.print("Breakpoint hit at 0x{x}\n", .{pc});
+                        } else if (sig == 19 or sig == 17 or sig == 23) {
+                            // SIGSTOP/SIGTSTP/SIGCONT - user interrupt
+                            try stdout.print("Interrupted.\n", .{});
+                        } else {
+                            try stdout.print("Stopped (signal {d})\n", .{sig});
+                        }
+                    },
+                    .exited => {
+                        const code = result.exit_code orelse 0;
+                        if (code == 0) {
+                            try stdout.print("Program exited normally.\n", .{});
+                        } else {
+                            try stdout.print("Program exited with code {d}.\n", .{code});
+                        }
+                    },
+                    .signaled => {
+                        const sig = result.signal orelse 0;
+                        const signame = switch (sig) {
+                            6 => "SIGABRT",
+                            8 => "SIGFPE",
+                            9 => "SIGKILL",
+                            11 => "SIGSEGV",
+                            15 => "SIGTERM",
+                            else => "signal",
+                        };
+                        try stdout.print("Program terminated by {s} ({d}).\n", .{ signame, sig });
+                    },
                     .running => {},
                 }
             }
@@ -190,21 +292,32 @@ pub const Cli = struct {
             }
         } else if (std.mem.eql(u8, cmd, "help") or std.mem.eql(u8, cmd, "h")) {
             try stdout.print(
-                \\Commands:
-                \\  run [args]        Start program
-                \\  continue, c       Continue execution
-                \\  step, s           Single step (into)
-                \\  next, n           Step over
-                \\  break <loc>       Set breakpoint (address or symbol)
-                \\  delete <n>        Delete breakpoint
+                \\Phantom Debugger Commands
+                \\
+                \\Running:
+                \\  run, r [args]     Start/restart program with optional arguments
+                \\  continue, c       Continue execution until breakpoint or exit
+                \\  step, s           Single step one instruction (into calls)
+                \\  next, n           Step over (currently same as step)
+                \\  quit, q           Detach and exit debugger
+                \\
+                \\Breakpoints:
+                \\  break, b <loc>    Set breakpoint at address (0x...) or function name
+                \\  delete, d <n>     Delete breakpoint by number
+                \\  info breakpoints  List all breakpoints
+                \\
+                \\Inspection:
                 \\  backtrace, bt     Show call stack
-                \\  frame <n>         Select stack frame
-                \\  print <expr>      Print expression/variable
-                \\  x <addr>          Examine memory
-                \\  info registers    Show registers
-                \\  info breakpoints  List breakpoints
-                \\  info locals       Show local variables
-                \\  quit, q           Exit debugger
+                \\  frame, f <n>      Select stack frame for inspection
+                \\  print, p <expr>   Print variable or expression
+                \\  x <addr>          Examine memory at address
+                \\  info registers    Show CPU registers
+                \\  info locals       Show local variables (partial)
+                \\
+                \\Tips:
+                \\  - Press Enter to repeat the last command
+                \\  - Ctrl+C interrupts a running program (not the debugger)
+                \\  - Addresses can be hex (0x400000) or decimal
                 \\
             , .{});
         } else {

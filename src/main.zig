@@ -20,6 +20,34 @@ pub const Evaluator = @import("eval.zig").Evaluator;
 
 const version = "0.1.0";
 
+/// Global debugger reference for signal handler.
+var global_debugger: ?*Debugger = null;
+
+/// SIGINT handler - interrupts the inferior process.
+fn sigintHandler(_: c_int) callconv(.C) void {
+    if (global_debugger) |dbg| {
+        if (dbg.process) |*p| {
+            if (p.state == .running) {
+                // Send SIGSTOP to the inferior
+                _ = std.os.linux.kill(p.pid, std.os.linux.SIG.STOP);
+            }
+        }
+    }
+}
+
+/// Install signal handlers.
+fn installSignalHandlers() void {
+    if (builtin.os.tag != .linux) return;
+
+    var sa: std.os.linux.Sigaction = .{
+        .handler = .{ .handler = sigintHandler },
+        .mask = std.os.linux.empty_sigset,
+        .flags = std.os.linux.SA.RESTART,
+    };
+
+    _ = std.os.linux.sigaction(std.os.linux.SIG.INT, &sa, null);
+}
+
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
@@ -50,12 +78,18 @@ pub fn main() !void {
     if (builtin.os.tag != .linux) {
         const stderr = std.io.getStdErr().writer();
         try stderr.print("error: phantom requires Linux (ptrace support)\n", .{});
+        try stderr.print("hint: phantom uses ptrace, which is only available on Linux\n", .{});
         std.process.exit(1);
     }
 
     // Initialize debugger
     var debugger = try Debugger.init(allocator);
     defer debugger.deinit();
+
+    // Install signal handlers and set global reference
+    global_debugger = &debugger;
+    installSignalHandlers();
+    defer global_debugger = null;
 
     // Parse command
     if (std.mem.eql(u8, cmd, "run")) {
@@ -64,8 +98,16 @@ pub fn main() !void {
             try stderr.print("usage: phantom run <program> [args...]\n", .{});
             std.process.exit(1);
         }
-        try debugger.loadProgram(args[2]);
-        try debugger.run(args[3..]);
+        debugger.loadProgram(args[2]) catch |err| {
+            const stderr = std.io.getStdErr().writer();
+            try stderr.print("error: cannot load program '{s}': {}\n", .{ args[2], err });
+            std.process.exit(1);
+        };
+        debugger.run(args[3..]) catch |err| {
+            const stderr = std.io.getStdErr().writer();
+            try stderr.print("error: cannot run program: {}\n", .{err});
+            std.process.exit(1);
+        };
     } else if (std.mem.eql(u8, cmd, "attach")) {
         if (args.len < 3) {
             const stderr = std.io.getStdErr().writer();
@@ -74,14 +116,27 @@ pub fn main() !void {
         }
         const pid = std.fmt.parseInt(i32, args[2], 10) catch {
             const stderr = std.io.getStdErr().writer();
-            try stderr.print("error: invalid pid: {s}\n", .{args[2]});
+            try stderr.print("error: invalid pid '{s}' - must be a number\n", .{args[2]});
             std.process.exit(1);
         };
-        try debugger.attach(pid);
+        debugger.attach(pid) catch |err| {
+            const stderr = std.io.getStdErr().writer();
+            try stderr.print("error: cannot attach to pid {d}: {}\n", .{ pid, err });
+            try stderr.print("hint: you may need root privileges or CAP_SYS_PTRACE\n", .{});
+            std.process.exit(1);
+        };
     } else {
         // Assume it's a program path for convenience
-        try debugger.loadProgram(cmd);
-        try debugger.run(args[2..]);
+        debugger.loadProgram(cmd) catch |err| {
+            const stderr = std.io.getStdErr().writer();
+            try stderr.print("error: cannot load program '{s}': {}\n", .{ cmd, err });
+            std.process.exit(1);
+        };
+        debugger.run(args[2..]) catch |err| {
+            const stderr = std.io.getStdErr().writer();
+            try stderr.print("error: cannot run program: {}\n", .{err});
+            std.process.exit(1);
+        };
     }
 
     // Run CLI
@@ -92,28 +147,36 @@ pub fn main() !void {
 fn printUsage() void {
     const stdout = std.io.getStdOut().writer();
     stdout.print(
-        \\phantom - A native debugger
+        \\phantom - A native debugger for Linux
         \\
         \\Usage:
-        \\  phantom <program> [args...]   Debug a program
-        \\  phantom run <program> [args...] Explicit run command
-        \\  phantom attach <pid>          Attach to running process
+        \\  phantom <program> [args...]     Debug a program (shorthand)
+        \\  phantom run <program> [args...] Debug a program (explicit)
+        \\  phantom attach <pid>            Attach to a running process
         \\
         \\Options:
-        \\  -h, --help     Show this help
+        \\  -h, --help     Show this help message
         \\  -v, --version  Show version
         \\
-        \\Commands (in debugger):
-        \\  run [args]      Start program
+        \\Examples:
+        \\  phantom ./myprogram           Debug myprogram
+        \\  phantom ./myprogram arg1 arg2 Debug with arguments
+        \\  phantom attach 1234           Attach to process 1234
+        \\
+        \\Debugger Commands (once inside):
+        \\  run, r          Start/restart program
         \\  continue, c     Continue execution
-        \\  step, s         Single step (into)
+        \\  step, s         Single step instruction
         \\  next, n         Step over
-        \\  break <loc>     Set breakpoint
-        \\  delete <n>      Delete breakpoint
+        \\  break, b <loc>  Set breakpoint (address or symbol)
+        \\  delete, d <n>   Delete breakpoint
         \\  backtrace, bt   Show call stack
-        \\  print <expr>    Print expression
+        \\  print, p <expr> Print variable/expression
         \\  info regs       Show registers
         \\  quit, q         Exit debugger
+        \\  help, h         Show all commands
+        \\
+        \\Note: Requires Linux with ptrace support. May need root or CAP_SYS_PTRACE.
         \\
     , .{}) catch {};
 }
