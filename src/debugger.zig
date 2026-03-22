@@ -14,6 +14,7 @@ pub const Debugger = struct {
     breakpoints: BreakpointManager,
     elf: ?Elf,
     program_path: ?[]const u8,
+    current_frame: u32,
 
     const Self = @This();
 
@@ -25,6 +26,7 @@ pub const Debugger = struct {
             .breakpoints = BreakpointManager.init(allocator),
             .elf = null,
             .program_path = null,
+            .current_frame = 0,
         };
     }
 
