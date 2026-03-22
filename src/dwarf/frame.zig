@@ -74,14 +74,14 @@ pub const FrameTable = struct {
     pub fn init(allocator: std.mem.Allocator) Self {
         return Self{
             .allocator = allocator,
-            .cies = std.ArrayList(Cie).init(allocator),
-            .fdes = std.ArrayList(Fde).init(allocator),
+            .cies = .empty,
+            .fdes = .empty,
         };
     }
 
     pub fn deinit(self: *Self) void {
-        self.cies.deinit();
-        self.fdes.deinit();
+        self.cies.deinit(self.allocator);
+        self.fdes.deinit(self.allocator);
     }
 
     /// Find FDE containing address.
@@ -315,7 +315,7 @@ pub fn evaluateCfa(
                     state.register_rules[@intCast(reg)] = .same_value;
                 },
 
-                types.CFA.undefined => {
+                types.CFA.undef => {
                     const reg = try readUleb128(instructions, &pos);
                     state.register_rules[@intCast(reg)] = .undefined;
                 },

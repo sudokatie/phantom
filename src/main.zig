@@ -16,6 +16,7 @@ pub const BreakpointManager = @import("breakpoint.zig").BreakpointManager;
 pub const Elf = @import("elf.zig").Elf;
 pub const Registers = @import("regs.zig").Registers;
 pub const Cli = @import("cli.zig").Cli;
+pub const Evaluator = @import("eval.zig").Evaluator;
 
 const version = "0.1.0";
 
@@ -119,4 +120,9 @@ fn printUsage() void {
 
 test "version string" {
     try std.testing.expect(version.len > 0);
+}
+
+test {
+    _ = @import("eval.zig");
+    _ = @import("dwarf/mod.zig");
 }

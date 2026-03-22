@@ -38,12 +38,12 @@ pub const ExprEvaluator = struct {
     pub fn init(allocator: std.mem.Allocator) Self {
         return Self{
             .allocator = allocator,
-            .stack = std.ArrayList(u64).init(allocator),
+            .stack = .empty,
         };
     }
 
     pub fn deinit(self: *Self) void {
-        self.stack.deinit();
+        self.stack.deinit(self.allocator);
     }
 
     /// Evaluate a location expression.
@@ -157,33 +157,33 @@ pub const ExprEvaluator = struct {
 
                 types.OP.drop => {
                     if (self.stack.items.len == 0) return error.StackUnderflow;
-                    _ = self.stack.pop();
+                    _ = self.stack.pop().?;
                 },
 
                 types.OP.plus => {
                     if (self.stack.items.len < 2) return error.StackUnderflow;
-                    const b = self.stack.pop();
-                    const a = self.stack.pop();
+                    const b = self.stack.pop().?;
+                    const a = self.stack.pop().?;
                     try self.stack.append(self.allocator, a +% b);
                 },
 
                 types.OP.plus_uconst => {
                     if (self.stack.items.len == 0) return error.StackUnderflow;
                     const addend = try readUleb128(expr, &pos);
-                    const val = self.stack.pop();
+                    const val = self.stack.pop().?;
                     try self.stack.append(self.allocator, val +% addend);
                 },
 
                 types.OP.minus => {
                     if (self.stack.items.len < 2) return error.StackUnderflow;
-                    const b = self.stack.pop();
-                    const a = self.stack.pop();
+                    const b = self.stack.pop().?;
+                    const a = self.stack.pop().?;
                     try self.stack.append(self.allocator, a -% b);
                 },
 
                 types.OP.deref => {
                     if (self.stack.items.len == 0) return error.StackUnderflow;
-                    const addr = self.stack.pop();
+                    const addr = self.stack.pop().?;
                     if (ctx.read_memory) |read_fn| {
                         if (read_fn(addr, 8)) |data| {
                             const val = std.mem.readInt(u64, data[0..8], .little);

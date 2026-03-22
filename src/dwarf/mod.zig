@@ -56,8 +56,8 @@ pub const DwarfInfo = struct {
 };
 
 test "dwarf info init" {
-    var info = DwarfInfo.init(std.testing.allocator);
-    defer info.deinit();
+    var dwarf_info = DwarfInfo.init(std.testing.allocator);
+    defer dwarf_info.deinit();
 }
 
 test {

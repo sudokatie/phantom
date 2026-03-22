@@ -32,13 +32,13 @@ pub const AbbrevTable = struct {
         return Self{
             .allocator = allocator,
             .entries = std.AutoHashMap(u32, Abbrev).init(allocator),
-            .attr_storage = std.ArrayList(AttrSpec).init(allocator),
+            .attr_storage = .empty,
         };
     }
 
     pub fn deinit(self: *Self) void {
         self.entries.deinit();
-        self.attr_storage.deinit();
+        self.attr_storage.deinit(self.allocator);
     }
 
     /// Look up abbreviation by code.

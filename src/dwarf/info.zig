@@ -29,12 +29,13 @@ pub const Die = struct {
     const Self = @This();
 
     pub fn init(allocator: std.mem.Allocator) Self {
+        _ = allocator;
         return Self{
             .offset = 0,
             .tag = 0,
             .has_children = false,
-            .attrs = std.ArrayList(Attr).init(allocator),
-            .children = std.ArrayList(*Die).init(allocator),
+            .attrs = .empty,
+            .children = .empty,
             .parent = null,
         };
     }
@@ -45,8 +46,8 @@ pub const Die = struct {
             child.deinit(allocator);
             allocator.destroy(child);
         }
-        self.children.deinit();
-        self.attrs.deinit();
+        self.children.deinit(allocator);
+        self.attrs.deinit(allocator);
     }
 
     /// Get attribute by name.

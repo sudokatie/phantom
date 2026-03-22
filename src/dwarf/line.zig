@@ -52,16 +52,16 @@ pub const LineTable = struct {
     pub fn init(allocator: std.mem.Allocator) Self {
         return Self{
             .allocator = allocator,
-            .entries = std.ArrayList(SourceLocation).init(allocator),
-            .files = std.ArrayList(FileName).init(allocator),
-            .directories = std.ArrayList([]const u8).init(allocator),
+            .entries = .empty,
+            .files = .empty,
+            .directories = .empty,
         };
     }
 
     pub fn deinit(self: *Self) void {
-        self.entries.deinit();
-        self.files.deinit();
-        self.directories.deinit();
+        self.entries.deinit(self.allocator);
+        self.files.deinit(self.allocator);
+        self.directories.deinit(self.allocator);
     }
 
     /// Get source location for an address.
