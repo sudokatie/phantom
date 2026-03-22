@@ -7,12 +7,18 @@ const std = @import("std");
 pub const types = @import("types.zig");
 pub const parser = @import("parser.zig");
 pub const abbrev = @import("abbrev.zig");
+pub const info = @import("info.zig");
 
 // Re-export key types
 pub const AbbrevTable = abbrev.AbbrevTable;
 pub const Abbrev = abbrev.Abbrev;
 pub const AttrSpec = abbrev.AttrSpec;
 pub const parseAbbrevSection = abbrev.parseAbbrevSection;
+
+pub const Die = info.Die;
+pub const CompUnit = info.CompUnit;
+pub const CompUnitHeader = info.CompUnitHeader;
+pub const parseCompUnit = info.parseCompUnit;
 
 /// DWARF debug information.
 pub const DwarfInfo = struct {
@@ -40,4 +46,5 @@ test {
     _ = types;
     _ = parser;
     _ = abbrev;
+    _ = info;
 }
