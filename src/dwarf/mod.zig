@@ -9,6 +9,7 @@ pub const parser = @import("parser.zig");
 pub const abbrev = @import("abbrev.zig");
 pub const info = @import("info.zig");
 pub const line = @import("line.zig");
+pub const expr = @import("expr.zig");
 
 // Re-export key types
 pub const AbbrevTable = abbrev.AbbrevTable;
@@ -24,6 +25,10 @@ pub const parseCompUnit = info.parseCompUnit;
 pub const LineTable = line.LineTable;
 pub const SourceLocation = line.SourceLocation;
 pub const parseLineProgram = line.parseLineProgram;
+
+pub const ExprEvaluator = expr.ExprEvaluator;
+pub const Location = expr.Location;
+pub const EvalContext = expr.EvalContext;
 
 /// DWARF debug information.
 pub const DwarfInfo = struct {
@@ -53,4 +58,5 @@ test {
     _ = abbrev;
     _ = info;
     _ = line;
+    _ = expr;
 }
