@@ -69,14 +69,14 @@ pub fn main() !void {
     }
 
     if (std.mem.eql(u8, cmd, "--version") or std.mem.eql(u8, cmd, "-v")) {
-        const stdout = std.io.getStdOut().writer();
+        const stdout = std.fs.File.stdout().deprecatedWriter();
         try stdout.print("phantom {s}\n", .{version});
         return;
     }
 
     // Check if running on Linux
     if (builtin.os.tag != .linux) {
-        const stderr = std.io.getStdErr().writer();
+        const stderr = std.fs.File.stderr().deprecatedWriter();
         try stderr.print("error: phantom requires Linux (ptrace support)\n", .{});
         try stderr.print("hint: phantom uses ptrace, which is only available on Linux\n", .{});
         std.process.exit(1);
@@ -94,33 +94,33 @@ pub fn main() !void {
     // Parse command
     if (std.mem.eql(u8, cmd, "run")) {
         if (args.len < 3) {
-            const stderr = std.io.getStdErr().writer();
+            const stderr = std.fs.File.stderr().deprecatedWriter();
             try stderr.print("usage: phantom run <program> [args...]\n", .{});
             std.process.exit(1);
         }
         debugger.loadProgram(args[2]) catch |err| {
-            const stderr = std.io.getStdErr().writer();
+            const stderr = std.fs.File.stderr().deprecatedWriter();
             try stderr.print("error: cannot load program '{s}': {}\n", .{ args[2], err });
             std.process.exit(1);
         };
         debugger.run(args[3..]) catch |err| {
-            const stderr = std.io.getStdErr().writer();
+            const stderr = std.fs.File.stderr().deprecatedWriter();
             try stderr.print("error: cannot run program: {}\n", .{err});
             std.process.exit(1);
         };
     } else if (std.mem.eql(u8, cmd, "attach")) {
         if (args.len < 3) {
-            const stderr = std.io.getStdErr().writer();
+            const stderr = std.fs.File.stderr().deprecatedWriter();
             try stderr.print("usage: phantom attach <pid>\n", .{});
             std.process.exit(1);
         }
         const pid = std.fmt.parseInt(i32, args[2], 10) catch {
-            const stderr = std.io.getStdErr().writer();
+            const stderr = std.fs.File.stderr().deprecatedWriter();
             try stderr.print("error: invalid pid '{s}' - must be a number\n", .{args[2]});
             std.process.exit(1);
         };
         debugger.attach(pid) catch |err| {
-            const stderr = std.io.getStdErr().writer();
+            const stderr = std.fs.File.stderr().deprecatedWriter();
             try stderr.print("error: cannot attach to pid {d}: {}\n", .{ pid, err });
             try stderr.print("hint: you may need root privileges or CAP_SYS_PTRACE\n", .{});
             std.process.exit(1);
@@ -128,12 +128,12 @@ pub fn main() !void {
     } else {
         // Assume it's a program path for convenience
         debugger.loadProgram(cmd) catch |err| {
-            const stderr = std.io.getStdErr().writer();
+            const stderr = std.fs.File.stderr().deprecatedWriter();
             try stderr.print("error: cannot load program '{s}': {}\n", .{ cmd, err });
             std.process.exit(1);
         };
         debugger.run(args[2..]) catch |err| {
-            const stderr = std.io.getStdErr().writer();
+            const stderr = std.fs.File.stderr().deprecatedWriter();
             try stderr.print("error: cannot run program: {}\n", .{err});
             std.process.exit(1);
         };
@@ -145,7 +145,7 @@ pub fn main() !void {
 }
 
 fn printUsage() void {
-    const stdout = std.io.getStdOut().writer();
+    const stdout = std.fs.File.stdout().deprecatedWriter();
     stdout.print(
         \\phantom - A native debugger for Linux
         \\

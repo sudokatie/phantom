@@ -24,8 +24,8 @@ pub const Cli = struct {
 
     /// Run the CLI loop.
     pub fn run(self: *Self) !void {
-        const stdin = std.io.getStdIn().reader();
-        const stdout = std.io.getStdOut().writer();
+        const stdin = std.fs.File.stdin().deprecatedReader();
+        const stdout = std.fs.File.stdout().deprecatedWriter();
 
         var buf: [1024]u8 = undefined;
         var last_cmd: []const u8 = "";
@@ -94,7 +94,7 @@ pub const Cli = struct {
 
     /// Execute a single command.
     pub fn executeCommand(self: *Self, line: []const u8) !void {
-        const stdout = std.io.getStdOut().writer();
+        const stdout = std.fs.File.stdout().deprecatedWriter();
 
         var it = std.mem.splitScalar(u8, line, ' ');
         const cmd = it.next() orelse return;
@@ -131,6 +131,25 @@ pub const Cli = struct {
                 try args_list.append(arg);
             }
             try self.debugger.run(args_list.items);
+        } else if (std.mem.eql(u8, cmd, "attach")) {
+            const arg = it.next() orelse {
+                try stdout.print("usage: attach <pid>\n", .{});
+                return;
+            };
+            const pid = std.fmt.parseInt(i32, arg, 10) catch {
+                try stdout.print("Invalid pid: {s}\n", .{arg});
+                return;
+            };
+            try self.debugger.attach(pid);
+            try stdout.print("Attached to process {d}.\n", .{pid});
+        } else if (std.mem.eql(u8, cmd, "detach")) {
+            if (self.debugger.process == null) {
+                try stdout.print("No process to detach from.\n", .{});
+                return;
+            }
+            const pid = self.debugger.process.?.pid;
+            try self.debugger.detach();
+            try stdout.print("Detached from process {d}.\n", .{pid});
         } else if (std.mem.eql(u8, cmd, "continue") or std.mem.eql(u8, cmd, "c")) {
             try self.debugger.continue_();
             try stdout.print("Continuing.\n", .{});
@@ -290,12 +309,24 @@ pub const Cli = struct {
             } else {
                 try stdout.print("Unknown info subcommand: {s}\n", .{subcmd});
             }
+        } else if (std.mem.eql(u8, cmd, "list") or std.mem.eql(u8, cmd, "l")) {
+            try self.showSourceListing(stdout);
+        } else if (std.mem.eql(u8, cmd, "disassemble") or std.mem.eql(u8, cmd, "disas")) {
+            const count: usize = blk: {
+                if (it.next()) |arg| {
+                    break :blk std.fmt.parseInt(usize, arg, 10) catch 10;
+                }
+                break :blk 10;
+            };
+            try self.disassemble(stdout, count);
         } else if (std.mem.eql(u8, cmd, "help") or std.mem.eql(u8, cmd, "h")) {
             try stdout.print(
                 \\Phantom Debugger Commands
                 \\
                 \\Running:
                 \\  run, r [args]     Start/restart program with optional arguments
+                \\  attach <pid>      Attach to a running process
+                \\  detach            Detach from current process
                 \\  continue, c       Continue execution until breakpoint or exit
                 \\  step, s           Single step one instruction (into calls)
                 \\  next, n           Step over (currently same as step)
@@ -312,7 +343,9 @@ pub const Cli = struct {
                 \\  print, p <expr>   Print variable or expression
                 \\  x <addr>          Examine memory at address
                 \\  info registers    Show CPU registers
-                \\  info locals       Show local variables (partial)
+                \\  info locals       Show local variables
+                \\  list, l           Show source code around current location
+                \\  disassemble, disas [n]  Disassemble n instructions (default: 10)
                 \\
                 \\Tips:
                 \\  - Press Enter to repeat the last command
@@ -399,7 +432,255 @@ pub const Cli = struct {
         defer self.allocator.free(formatted);
         try writer.print("{s}", .{formatted});
     }
+
+    /// Show source listing around current location.
+    fn showSourceListing(self: *Self, writer: anytype) !void {
+        if (self.debugger.process == null) {
+            try writer.print("No process.\n", .{});
+            return;
+        }
+
+        const pc = try self.debugger.getPC();
+
+        // Try to get source location from DWARF
+        if (self.debugger.dwarf) |*dwarf| {
+            if (dwarf.getSourceLocation(pc)) |loc| {
+                // Get file name
+                const filename = if (loc.file < dwarf.files.items.len)
+                    dwarf.files.items[loc.file].name
+                else
+                    "(unknown)";
+
+                try writer.print("Location: {s}:{d}\n", .{ filename, loc.line });
+
+                // Try to read and display source file
+                const file = std.fs.cwd().openFile(filename, .{}) catch {
+                    try writer.print("(source file not found)\n", .{});
+                    return;
+                };
+                defer file.close();
+
+                const reader = file.reader();
+                var line_num: u32 = 1;
+                const start_line = if (loc.line > 5) loc.line - 5 else 1;
+                const end_line = loc.line + 5;
+
+                var line_buf: [1024]u8 = undefined;
+                while (reader.readUntilDelimiterOrEof(&line_buf, '\n') catch null) |line| {
+                    if (line_num >= start_line and line_num <= end_line) {
+                        const marker: []const u8 = if (line_num == loc.line) "=>" else "  ";
+                        try writer.print("{s} {d:>4}: {s}\n", .{ marker, line_num, line });
+                    }
+                    line_num += 1;
+                    if (line_num > end_line) break;
+                }
+                return;
+            }
+        }
+
+        // Fall back to showing address with symbol
+        try writer.print("0x{x:0>16}", .{pc});
+        if (self.debugger.elf) |*elf| {
+            if (elf.symbolAt(pc)) |sym| {
+                try writer.print(" in {s}", .{sym.name});
+            }
+        }
+        try writer.print("\n(no source information available)\n", .{});
+    }
+
+    /// Disassemble instructions at current PC.
+    fn disassemble(self: *Self, writer: anytype, count: usize) !void {
+        if (self.debugger.process == null) {
+            try writer.print("No process.\n", .{});
+            return;
+        }
+
+        const pc = try self.debugger.getPC();
+
+        // Read memory at PC
+        const bytes_needed = count * 15; // Max x86-64 instruction is 15 bytes
+        const data = self.debugger.process.?.readMemory(pc, bytes_needed) catch |err| {
+            try writer.print("Cannot read memory at 0x{x}: {}\n", .{ pc, err });
+            return;
+        };
+
+        try writer.print("Dump of assembler code:\n", .{});
+
+        var offset: usize = 0;
+        var insn_count: usize = 0;
+
+        while (offset < data.len and insn_count < count) {
+            const addr = pc + offset;
+
+            // Show current instruction marker
+            const marker: []const u8 = if (offset == 0) "=> " else "   ";
+
+            // Get symbol info for this address
+            var sym_info: []const u8 = "";
+            if (self.debugger.elf) |*elf| {
+                if (offset == 0) {
+                    if (elf.symbolAt(addr)) |sym| {
+                        sym_info = sym.name;
+                    }
+                }
+            }
+
+            if (sym_info.len > 0 and offset == 0) {
+                try writer.print("<{s}>:\n", .{sym_info});
+            }
+
+            // Simple x86-64 instruction decoding (just show hex bytes)
+            // Real disassembly would need a full decoder
+            const insn_len = decodeInstructionLength(data[offset..]);
+
+            try writer.print("{s}0x{x:0>16}:  ", .{ marker, addr });
+
+            // Print instruction bytes
+            var i: usize = 0;
+            while (i < insn_len and offset + i < data.len) : (i += 1) {
+                try writer.print("{x:0>2} ", .{data[offset + i]});
+            }
+
+            // Pad to align mnemonics
+            var pad: usize = (7 - @min(insn_len, 7)) * 3;
+            while (pad > 0) : (pad -= 1) {
+                try writer.print(" ", .{});
+            }
+
+            // Decode common instructions
+            const mnemonic = decodeInstruction(data[offset..][0..@min(insn_len, data.len - offset)]);
+            try writer.print("  {s}\n", .{mnemonic});
+
+            offset += insn_len;
+            insn_count += 1;
+        }
+
+        try writer.print("End of assembler dump.\n", .{});
+    }
 };
+
+/// Decode x86-64 instruction length (simplified).
+fn decodeInstructionLength(data: []const u8) usize {
+    if (data.len == 0) return 1;
+
+    var i: usize = 0;
+
+    // Skip prefixes
+    while (i < data.len) {
+        const b = data[i];
+        if (b == 0x66 or b == 0x67 or b == 0xF0 or b == 0xF2 or b == 0xF3 or
+            (b >= 0x40 and b <= 0x4F))
+        { // REX prefixes
+            i += 1;
+        } else {
+            break;
+        }
+    }
+
+    if (i >= data.len) return i;
+
+    const opcode = data[i];
+    i += 1;
+
+    // Simple length estimation based on opcode
+    return switch (opcode) {
+        0x00...0x03, 0x08...0x0B, 0x10...0x13, 0x18...0x1B,
+        0x20...0x23, 0x28...0x2B, 0x30...0x33, 0x38...0x3B,
+        0x88...0x8B,
+        => i + 1, // ModR/M byte
+        0x04, 0x0C, 0x14, 0x1C, 0x24, 0x2C, 0x34, 0x3C => i + 1, // imm8
+        0x05, 0x0D, 0x15, 0x1D, 0x25, 0x2D, 0x35, 0x3D => i + 4, // imm32
+        0x50...0x5F => i, // push/pop reg
+        0x70...0x7F => i + 1, // Jcc short
+        0x90 => i, // NOP
+        0xB0...0xB7 => i + 1, // mov r8, imm8
+        0xB8...0xBF => i + 4, // mov r32, imm32 (or 8 with REX.W)
+        0xC3 => i, // ret
+        0xC9 => i, // leave
+        0xCC => i, // int3
+        0xCD => i + 1, // int imm8
+        0xE8 => i + 4, // call rel32
+        0xE9 => i + 4, // jmp rel32
+        0xEB => i + 1, // jmp short
+        0xFF => i + 1, // call/jmp r/m (simplified)
+        0x0F => blk: { // Two-byte opcode
+            if (i >= data.len) break :blk i;
+            const op2 = data[i];
+            i += 1;
+            break :blk switch (op2) {
+                0x80...0x8F => i + 4, // Jcc near
+                0x1F => i + 1, // NOP with ModR/M
+                else => i + 1,
+            };
+        },
+        else => i + 1, // Default: assume 1 more byte
+    };
+}
+
+/// Decode x86-64 instruction to mnemonic (simplified).
+fn decodeInstruction(data: []const u8) []const u8 {
+    if (data.len == 0) return "(bad)";
+
+    var i: usize = 0;
+    var has_rex_w = false;
+
+    // Skip prefixes
+    while (i < data.len) {
+        const b = data[i];
+        if (b >= 0x48 and b <= 0x4F) {
+            has_rex_w = true;
+            i += 1;
+        } else if (b == 0x66 or b == 0x67 or b == 0xF0 or b == 0xF2 or b == 0xF3 or
+            (b >= 0x40 and b <= 0x47))
+        {
+            i += 1;
+        } else {
+            break;
+        }
+    }
+
+    if (i >= data.len) return "(bad)";
+
+    const opcode = data[i];
+
+    return switch (opcode) {
+        0x50...0x57 => "push",
+        0x58...0x5F => "pop",
+        0x89 => if (has_rex_w) "mov (r64)" else "mov (r32)",
+        0x8B => if (has_rex_w) "mov (r64)" else "mov (r32)",
+        0x31 => "xor",
+        0x29 => "sub",
+        0x01 => "add",
+        0x39 => "cmp",
+        0x83 => "add/sub/cmp (imm8)",
+        0x90 => "nop",
+        0xC3 => "ret",
+        0xC9 => "leave",
+        0xCC => "int3",
+        0xE8 => "call",
+        0xE9 => "jmp",
+        0xEB => "jmp (short)",
+        0x74 => "je (short)",
+        0x75 => "jne (short)",
+        0x7E => "jle (short)",
+        0x7F => "jg (short)",
+        0x0F => blk: {
+            if (i + 1 >= data.len) break :blk "(bad)";
+            const op2 = data[i + 1];
+            break :blk switch (op2) {
+                0x84 => "je",
+                0x85 => "jne",
+                0x8E => "jle",
+                0x8F => "jg",
+                0x1F => "nop",
+                0xAF => "imul",
+                else => "(two-byte)",
+            };
+        },
+        0xFF => "call/jmp (indirect)",
+        else => "(unknown)",
+    };
+}
 
 test "cli init" {
     // Just test that types compile
