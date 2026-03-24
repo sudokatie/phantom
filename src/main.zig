@@ -17,6 +17,7 @@ pub const Elf = @import("elf.zig").Elf;
 pub const Registers = @import("regs.zig").Registers;
 pub const Cli = @import("cli.zig").Cli;
 pub const Evaluator = @import("eval.zig").Evaluator;
+pub const Disassembler = @import("disasm.zig");
 
 const version = "0.1.0";
 
@@ -188,4 +189,5 @@ test "version string" {
 test {
     _ = @import("eval.zig");
     _ = @import("dwarf/mod.zig");
+    _ = @import("disasm.zig");
 }

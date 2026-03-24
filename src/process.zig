@@ -268,6 +268,85 @@ pub const Process = struct {
     }
 };
 
+/// Memory mapping from /proc/pid/maps.
+pub const MemoryMapping = struct {
+    start: u64,
+    end: u64,
+    perms: [4]u8,
+    offset: u64,
+    path: []const u8,
+};
+
+/// Read memory mappings for ASLR handling.
+pub fn readMappings(allocator: std.mem.Allocator, pid: i32) ![]MemoryMapping {
+    var path_buf: [64]u8 = undefined;
+    const path = std.fmt.bufPrint(&path_buf, "/proc/{d}/maps", .{pid}) catch return error.PathTooLong;
+
+    const file = std.fs.openFileAbsolute(path, .{}) catch return error.CannotReadMaps;
+    defer file.close();
+
+    var mappings = std.ArrayList(MemoryMapping).init(allocator);
+    errdefer mappings.deinit();
+
+    var line_buf: [512]u8 = undefined;
+    const reader = file.reader();
+
+    while (reader.readUntilDelimiter(&line_buf, '\n')) |line| {
+        // Parse: start-end perms offset dev inode pathname
+        var it = std.mem.splitScalar(u8, line, ' ');
+
+        const addr_range = it.next() orelse continue;
+        var addr_it = std.mem.splitScalar(u8, addr_range, '-');
+        const start_str = addr_it.next() orelse continue;
+        const end_str = addr_it.next() orelse continue;
+
+        const start = std.fmt.parseInt(u64, start_str, 16) catch continue;
+        const end = std.fmt.parseInt(u64, end_str, 16) catch continue;
+
+        const perms_str = it.next() orelse continue;
+        var perms: [4]u8 = .{ '-', '-', '-', '-' };
+        for (perms_str, 0..) |c, i| {
+            if (i < 4) perms[i] = c;
+        }
+
+        const offset_str = it.next() orelse continue;
+        const offset = std.fmt.parseInt(u64, offset_str, 16) catch 0;
+
+        _ = it.next(); // dev
+        _ = it.next(); // inode
+
+        // Remaining is pathname (may have leading spaces)
+        var path_start: usize = 0;
+        const rest = it.rest();
+        while (path_start < rest.len and rest[path_start] == ' ') {
+            path_start += 1;
+        }
+        const mapping_path = if (path_start < rest.len) rest[path_start..] else "";
+
+        try mappings.append(.{
+            .start = start,
+            .end = end,
+            .perms = perms,
+            .offset = offset,
+            .path = try allocator.dupe(u8, mapping_path),
+        });
+    } else |err| {
+        if (err != error.EndOfStream) return err;
+    }
+
+    return mappings.toOwnedSlice();
+}
+
+/// Find the base address of a mapped file (for PIE/ASLR).
+pub fn findBaseAddress(mappings: []const MemoryMapping, path: []const u8) ?u64 {
+    for (mappings) |m| {
+        if (std.mem.endsWith(u8, m.path, path) and m.offset == 0) {
+            return m.start;
+        }
+    }
+    return null;
+}
+
 test "process state enum" {
     const state = ProcessState.stopped;
     try std.testing.expect(state == .stopped);

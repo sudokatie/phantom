@@ -9,19 +9,24 @@ Phantom implements a debugger from scratch using:
 - DWARF debug info for source-level debugging
 - Software breakpoints (int3)
 - Stack unwinding with CFI
+- x86-64 disassembly
 
 It's educational - see how GDB works under the hood.
 
 ## Features
 
 - Process control (attach, detach, continue, step, next)
-- Software breakpoints (by address or symbol name)
+- Software breakpoints (by address, function name, or file:line)
+- One-shot breakpoints (triggers once, then disables)
 - Register and memory inspection
 - Stack unwinding with backtrace
 - DWARF debug info parsing (abbreviations, DIEs, line numbers)
 - Location expression evaluation
 - Call frame information (CFI) for stack unwinding
-- Expression evaluator for variable inspection
+- Expression evaluator for variables and registers
+- Source code listing
+- x86-64 disassembly
+- ASLR support via /proc/pid/maps
 
 ## Quick Start
 
@@ -47,18 +52,30 @@ Running:
   quit, q           Detach and exit debugger
 
 Breakpoints:
-  break, b <loc>    Set breakpoint (address or symbol name)
+  break, b <loc>    Set breakpoint (address, function, or file:line)
   delete, d <n>     Delete breakpoint by number
   info breakpoints  List all breakpoints
+
+Source:
+  list, l [line]    Show source code around current line
+  disassemble       Show assembly at current location
 
 Inspection:
   backtrace, bt     Show call stack with symbols
   frame, f <n>      Select stack frame for inspection
-  print, p <expr>   Print variable or expression
+  print, p <expr>   Print variable or register ($rax)
   x <addr>          Examine memory at address
   info registers    Show CPU registers
   info locals       Show local variables
   help, h           Show all commands
+```
+
+### Breakpoint Examples
+
+```
+(phantom) b main              # Break at function
+(phantom) b 0x401000          # Break at address
+(phantom) b main.c:42         # Break at file:line
 ```
 
 Press Enter to repeat the last command. Ctrl+C interrupts the debuggee, not the debugger.
@@ -77,9 +94,10 @@ phantom/
 ├── src/
 │   ├── main.zig        Entry point, argument parsing
 │   ├── debugger.zig    Debugger state machine
-│   ├── process.zig     ptrace operations
-│   ├── breakpoint.zig  Breakpoint management
+│   ├── process.zig     ptrace operations, /proc/maps parsing
+│   ├── breakpoint.zig  Breakpoint management (including one-shot)
 │   ├── eval.zig        Expression evaluator
+│   ├── disasm.zig      x86-64 disassembler
 │   ├── elf.zig         ELF parsing
 │   ├── regs.zig        Register handling
 │   ├── cli.zig         Command interface
@@ -100,7 +118,9 @@ phantom/
 2. **Breakpoints**: Write 0xCC (int3) to instruction locations
 3. **Wait**: waitpid() for process state changes
 4. **Inspect**: Read memory and registers via ptrace
-5. **Continue**: ptrace(CONT) to resume execution
+5. **Source**: Map addresses to lines via DWARF .debug_line
+6. **Disassemble**: Decode x86-64 instructions at PC
+7. **Continue**: ptrace(CONT) to resume execution
 
 ## Limitations (v0.1.0)
 

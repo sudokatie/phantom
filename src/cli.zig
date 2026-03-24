@@ -4,7 +4,10 @@
 
 const std = @import("std");
 const Debugger = @import("debugger.zig").Debugger;
+const LocalVariable = @import("debugger.zig").LocalVariable;
 const eval = @import("eval.zig");
+const disasm = @import("disasm.zig");
+const dwarf = @import("dwarf/mod.zig");
 
 /// Command line interface for the debugger.
 pub const Cli = struct {
@@ -226,9 +229,35 @@ pub const Cli = struct {
             try self.examineMemory(stdout, addr, 64);
         } else if (std.mem.eql(u8, cmd, "break") or std.mem.eql(u8, cmd, "b")) {
             const arg = it.next() orelse {
-                try stdout.print("usage: break <address|function>\n", .{});
+                try stdout.print("usage: break <address|function|file:line>\n", .{});
                 return;
             };
+
+            // Try parsing as file:line
+            if (std.mem.indexOf(u8, arg, ":")) |colon_pos| {
+                const filename = arg[0..colon_pos];
+                const line_str = arg[colon_pos + 1 ..];
+                const line_num = std.fmt.parseInt(u32, line_str, 10) catch {
+                    try stdout.print("Invalid line number: {s}\n", .{line_str});
+                    return;
+                };
+
+                // Find file index
+                const file_idx = self.debugger.findFileIndex(filename) orelse {
+                    try stdout.print("Source file not found: {s}\n", .{filename});
+                    return;
+                };
+
+                // Get address for line
+                const addr = self.debugger.getAddressForLine(file_idx, line_num) orelse {
+                    try stdout.print("No code at {s}:{d}\n", .{ filename, line_num });
+                    return;
+                };
+
+                const id = try self.debugger.setBreakpoint(addr);
+                try stdout.print("Breakpoint {d} at {s}:{d} (0x{x})\n", .{ id, filename, line_num, addr });
+                return;
+            }
 
             // Try parsing as hex address
             const addr = std.fmt.parseInt(u64, arg, 0) catch blk: {
@@ -286,10 +315,14 @@ pub const Cli = struct {
                     }
                 }
             } else if (std.mem.eql(u8, subcmd, "locals")) {
-                try stdout.print("(locals not yet implemented)\n", .{});
+                try self.showLocals(stdout);
             } else {
                 try stdout.print("Unknown info subcommand: {s}\n", .{subcmd});
             }
+        } else if (std.mem.eql(u8, cmd, "list") or std.mem.eql(u8, cmd, "l")) {
+            try self.showSource(stdout, it.next());
+        } else if (std.mem.eql(u8, cmd, "disassemble") or std.mem.eql(u8, cmd, "disas")) {
+            try self.showDisassembly(stdout, it.next());
         } else if (std.mem.eql(u8, cmd, "help") or std.mem.eql(u8, cmd, "h")) {
             try stdout.print(
                 \\Phantom Debugger Commands
@@ -302,22 +335,27 @@ pub const Cli = struct {
                 \\  quit, q           Detach and exit debugger
                 \\
                 \\Breakpoints:
-                \\  break, b <loc>    Set breakpoint at address (0x...) or function name
+                \\  break, b <loc>    Set breakpoint (address, function, or file:line)
                 \\  delete, d <n>     Delete breakpoint by number
                 \\  info breakpoints  List all breakpoints
+                \\
+                \\Source:
+                \\  list, l [line]    Show source code around current line or specified line
+                \\  disassemble       Show assembly at current location
                 \\
                 \\Inspection:
                 \\  backtrace, bt     Show call stack
                 \\  frame, f <n>      Select stack frame for inspection
-                \\  print, p <expr>   Print variable or expression
+                \\  print, p <expr>   Print variable or register ($rax)
                 \\  x <addr>          Examine memory at address
                 \\  info registers    Show CPU registers
-                \\  info locals       Show local variables (partial)
+                \\  info locals       Show local variables
                 \\
                 \\Tips:
                 \\  - Press Enter to repeat the last command
                 \\  - Ctrl+C interrupts a running program (not the debugger)
                 \\  - Addresses can be hex (0x400000) or decimal
+                \\  - Breakpoints: 'b main', 'b 0x401000', 'b main.c:42'
                 \\
             , .{});
         } else {
@@ -378,9 +416,107 @@ pub const Cli = struct {
 
     /// Print expression value.
     fn printExpression(self: *Self, writer: anytype, expr: []const u8) !void {
-        _ = self;
-        // For now just print the expression - full evaluation needs DWARF integration
-        try writer.print("${s} = (evaluation not yet implemented)\n", .{expr});
+        const trimmed = std.mem.trim(u8, expr, " \t");
+
+        if (self.debugger.process == null) {
+            try writer.print("No process.\n", .{});
+            return;
+        }
+
+        // Handle register references ($rax, $rbp, etc.)
+        if (trimmed.len > 1 and trimmed[0] == '$') {
+            const reg_name = trimmed[1..];
+            const regs = self.debugger.process.?.getRegisters() catch {
+                try writer.print("Cannot read registers.\n", .{});
+                return;
+            };
+
+            if (regs.get(reg_name)) |value| {
+                try writer.print("${s} = 0x{x} ({d})\n", .{ reg_name, value, value });
+            } else {
+                try writer.print("Unknown register: {s}\n", .{reg_name});
+            }
+            return;
+        }
+
+        // Handle hex address dereference (*0x...)
+        if (trimmed.len > 1 and trimmed[0] == '*') {
+            const addr_str = trimmed[1..];
+            const addr = std.fmt.parseInt(u64, addr_str, 0) catch {
+                try writer.print("Invalid address: {s}\n", .{addr_str});
+                return;
+            };
+
+            var buf: [8]u8 = undefined;
+            self.debugger.process.?.readMemory(addr, &buf) catch {
+                try writer.print("Cannot read memory at 0x{x}\n", .{addr});
+                return;
+            };
+
+            const value = std.mem.readInt(u64, &buf, .little);
+            try writer.print("*0x{x} = 0x{x} ({d})\n", .{ addr, value, value });
+            return;
+        }
+
+        // Try looking up as a variable name
+        if (self.debugger.getLocalVariables()) |locals| {
+            defer self.allocator.free(locals);
+
+            for (locals) |local| {
+                if (std.mem.eql(u8, local.name, trimmed)) {
+                    if (local.location) |loc| {
+                        switch (loc) {
+                            .register => |reg| {
+                                const regs = self.debugger.process.?.getRegisters() catch {
+                                    try writer.print("{s} = (cannot read register)\n", .{local.name});
+                                    return;
+                                };
+                                if (regs.getByDwarfNum(reg)) |value| {
+                                    try writer.print("{s} = 0x{x} ({d})\n", .{ local.name, value, value });
+                                } else {
+                                    try writer.print("{s} = (unknown register {d})\n", .{ local.name, reg });
+                                }
+                            },
+                            .address => |addr| {
+                                var buf: [8]u8 = undefined;
+                                self.debugger.process.?.readMemory(addr, &buf) catch {
+                                    try writer.print("{s} = (cannot read memory)\n", .{local.name});
+                                    return;
+                                };
+                                const value = std.mem.readInt(u64, &buf, .little);
+                                try writer.print("{s} = 0x{x} ({d})\n", .{ local.name, value, value });
+                            },
+                            .frame_offset => |offset| {
+                                const regs = self.debugger.process.?.getRegisters() catch {
+                                    try writer.print("{s} = (cannot read registers)\n", .{local.name});
+                                    return;
+                                };
+                                const addr = if (offset >= 0)
+                                    regs.rbp +% @as(u64, @intCast(offset))
+                                else
+                                    regs.rbp -% @as(u64, @intCast(-offset));
+
+                                var buf: [8]u8 = undefined;
+                                self.debugger.process.?.readMemory(addr, &buf) catch {
+                                    try writer.print("{s} = (cannot read memory)\n", .{local.name});
+                                    return;
+                                };
+                                const value = std.mem.readInt(u64, &buf, .little);
+                                try writer.print("{s} = 0x{x} ({d})\n", .{ local.name, value, value });
+                            },
+                            .value => |v| {
+                                try writer.print("{s} = 0x{x} ({d})\n", .{ local.name, v, v });
+                            },
+                        }
+                    } else {
+                        try writer.print("{s} = (location unavailable)\n", .{local.name});
+                    }
+                    return;
+                }
+            }
+        }
+
+        try writer.print("Variable not found: {s}\n", .{trimmed});
     }
 
     /// Examine memory at address.
@@ -390,14 +526,181 @@ pub const Cli = struct {
             return;
         }
 
-        const data = self.debugger.process.?.readMemory(addr, size) catch |err| {
+        var buf: [256]u8 = undefined;
+        const read_size = @min(size, buf.len);
+        self.debugger.process.?.readMemory(addr, buf[0..read_size]) catch |err| {
             try writer.print("Cannot read memory at 0x{x}: {}\n", .{ addr, err });
             return;
         };
 
-        const formatted = try eval.formatMemory(self.allocator, data, addr);
+        const formatted = try eval.formatMemory(self.allocator, buf[0..read_size], addr);
         defer self.allocator.free(formatted);
         try writer.print("{s}", .{formatted});
+    }
+
+    /// Show local variables.
+    fn showLocals(self: *Self, writer: anytype) !void {
+        if (self.debugger.process == null) {
+            try writer.print("No process.\n", .{});
+            return;
+        }
+
+        if (self.debugger.getLocalVariables()) |locals| {
+            defer self.allocator.free(locals);
+
+            if (locals.len == 0) {
+                try writer.print("No locals found.\n", .{});
+                return;
+            }
+
+            for (locals) |local| {
+                try writer.print("{s}", .{local.name});
+                if (local.type_name) |t| {
+                    try writer.print(" : {s}", .{t});
+                }
+                if (local.location) |loc| {
+                    switch (loc) {
+                        .register => |reg| try writer.print(" (reg{d})", .{reg}),
+                        .address => |addr| try writer.print(" (0x{x})", .{addr}),
+                        .frame_offset => |off| try writer.print(" (rbp{d:+})", .{off}),
+                        .value => |v| try writer.print(" = {d}", .{v}),
+                    }
+                }
+                try writer.print("\n", .{});
+            }
+        } else {
+            try writer.print("No debug info available.\n", .{});
+        }
+    }
+
+    /// Show source code around current location.
+    fn showSource(self: *Self, writer: anytype, line_arg: ?[]const u8) !void {
+        if (self.debugger.process == null) {
+            try writer.print("No process.\n", .{});
+            return;
+        }
+
+        const pc = self.debugger.getPC() catch {
+            try writer.print("Cannot get current location.\n", .{});
+            return;
+        };
+
+        // Get source location for current PC
+        const loc = self.debugger.getSourceLocation(pc) orelse {
+            try writer.print("No source info for 0x{x}\n", .{pc});
+            return;
+        };
+
+        // Get filename
+        const filename = self.debugger.getFileName(loc.file) orelse {
+            try writer.print("Unknown source file.\n", .{});
+            return;
+        };
+
+        // Determine which line to show
+        const target_line = if (line_arg) |arg|
+            std.fmt.parseInt(u32, arg, 10) catch loc.line
+        else
+            loc.line;
+
+        // Get source lines (5 before and after)
+        const context: u32 = 5;
+        const start_line = if (target_line > context) target_line - context else 1;
+
+        try writer.print("{s}:\n", .{filename});
+
+        // Read and display source
+        const content = self.debugger.getSourceContent(filename) orelse {
+            try writer.print("(source file not found)\n", .{});
+            return;
+        };
+
+        var line_num: u32 = 1;
+        var line_start: usize = 0;
+
+        for (content, 0..) |c, i| {
+            if (c == '\n') {
+                if (line_num >= start_line and line_num <= target_line + context) {
+                    const marker: []const u8 = if (line_num == loc.line) ">" else " ";
+                    try writer.print("{s} {d:>4} | {s}\n", .{ marker, line_num, content[line_start..i] });
+                }
+                line_start = i + 1;
+                line_num += 1;
+                if (line_num > target_line + context) break;
+            }
+        }
+
+        // Handle last line without newline
+        if (line_num >= start_line and line_num <= target_line + context and line_start < content.len) {
+            const marker: []const u8 = if (line_num == loc.line) ">" else " ";
+            try writer.print("{s} {d:>4} | {s}\n", .{ marker, line_num, content[line_start..] });
+        }
+    }
+
+    /// Show disassembly at current location.
+    fn showDisassembly(self: *Self, writer: anytype, count_arg: ?[]const u8) !void {
+        if (self.debugger.process == null) {
+            try writer.print("No process.\n", .{});
+            return;
+        }
+
+        const pc = self.debugger.getPC() catch {
+            try writer.print("Cannot get current location.\n", .{});
+            return;
+        };
+
+        const count = if (count_arg) |arg|
+            std.fmt.parseInt(usize, arg, 10) catch 10
+        else
+            10;
+
+        // Read code bytes
+        var code: [256]u8 = undefined;
+        self.debugger.process.?.readMemory(pc, &code) catch {
+            try writer.print("Cannot read memory at 0x{x}\n", .{pc});
+            return;
+        };
+
+        // Disassemble
+        const insns = disasm.disassembleN(self.allocator, &code, pc, count) catch {
+            try writer.print("Disassembly failed.\n", .{});
+            return;
+        };
+        defer {
+            for (insns) |insn| {
+                self.allocator.free(insn.bytes);
+                // Only free operands if it was allocated (not a static string)
+                if (insn.operands.len > 0) {
+                    const static_ops = [_][]const u8{ "rbp", "rsp", "rax", "rbx", "rcx", "rdx", "rsi", "rdi", "" };
+                    var is_static = false;
+                    for (static_ops) |s| {
+                        if (insn.operands.ptr == s.ptr) {
+                            is_static = true;
+                            break;
+                        }
+                    }
+                    if (!is_static) {
+                        self.allocator.free(insn.operands);
+                    }
+                }
+            }
+            self.allocator.free(insns);
+        }
+
+        // Get symbol name if available
+        if (self.debugger.elf) |*elf| {
+            if (elf.symbolAt(pc)) |sym| {
+                try writer.print("Dump of assembler code for function {s}:\n", .{sym.name});
+            }
+        }
+
+        for (insns) |insn| {
+            const formatted = disasm.formatInstruction(self.allocator, insn) catch continue;
+            defer self.allocator.free(formatted);
+
+            const marker: []const u8 = if (insn.address == pc) "=> " else "   ";
+            try writer.print("{s}{s}\n", .{ marker, formatted });
+        }
     }
 };
 

@@ -12,6 +12,7 @@ pub const Breakpoint = struct {
     original_byte: u8,
     enabled: bool,
     hit_count: u32,
+    one_shot: bool,
 
     const Self = @This();
 
@@ -22,6 +23,18 @@ pub const Breakpoint = struct {
             .original_byte = original_byte,
             .enabled = true,
             .hit_count = 0,
+            .one_shot = false,
+        };
+    }
+
+    pub fn initOneShot(id: u32, address: u64, original_byte: u8) Self {
+        return Self{
+            .id = id,
+            .address = address,
+            .original_byte = original_byte,
+            .enabled = true,
+            .hit_count = 0,
+            .one_shot = true,
         };
     }
 };
@@ -52,6 +65,15 @@ pub const BreakpointManager = struct {
 
     /// Set a breakpoint at the given address.
     pub fn set(self: *Self, process: *Process, addr: u64) !u32 {
+        return self.setInternal(process, addr, false);
+    }
+
+    /// Set a one-shot breakpoint (disables after first hit).
+    pub fn setOneShot(self: *Self, process: *Process, addr: u64) !u32 {
+        return self.setInternal(process, addr, true);
+    }
+
+    fn setInternal(self: *Self, process: *Process, addr: u64, one_shot: bool) !u32 {
         // Check if breakpoint already exists
         if (self.breakpoints.contains(addr)) {
             return error.BreakpointExists;
@@ -68,7 +90,10 @@ pub const BreakpointManager = struct {
         const id = self.next_id;
         self.next_id += 1;
 
-        const bp = Breakpoint.init(id, addr, buf[0]);
+        const bp = if (one_shot)
+            Breakpoint.initOneShot(id, addr, buf[0])
+        else
+            Breakpoint.init(id, addr, buf[0]);
         try self.breakpoints.put(addr, bp);
         try self.by_id.put(id, addr);
 
@@ -132,6 +157,11 @@ pub const BreakpointManager = struct {
         regs.rip = bp_addr;
         try process.setRegisters(&regs);
 
+        // Disable one-shot breakpoints after first hit
+        if (bp.one_shot) {
+            bp.enabled = false;
+        }
+
         return true;
     }
 
@@ -159,6 +189,14 @@ test "breakpoint init" {
     try std.testing.expect(bp.id == 1);
     try std.testing.expect(bp.address == 0x401000);
     try std.testing.expect(bp.enabled);
+    try std.testing.expect(!bp.one_shot);
+}
+
+test "breakpoint one-shot init" {
+    const bp = Breakpoint.initOneShot(1, 0x401000, 0x55);
+    try std.testing.expect(bp.id == 1);
+    try std.testing.expect(bp.enabled);
+    try std.testing.expect(bp.one_shot);
 }
 
 test "breakpoint manager init" {
