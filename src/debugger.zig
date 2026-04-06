@@ -5,6 +5,10 @@
 const std = @import("std");
 const Process = @import("process.zig").Process;
 const BreakpointManager = @import("breakpoint.zig").BreakpointManager;
+const WatchpointManager = @import("watchpoint.zig").WatchpointManager;
+const Watchpoint = @import("watchpoint.zig").Watchpoint;
+pub const WatchCondition = @import("watchpoint.zig").WatchCondition;
+pub const WatchSize = @import("watchpoint.zig").WatchSize;
 const Elf = @import("elf.zig").Elf;
 const dwarf = @import("dwarf/mod.zig");
 
@@ -13,6 +17,7 @@ pub const Debugger = struct {
     allocator: std.mem.Allocator,
     process: ?Process,
     breakpoints: BreakpointManager,
+    watchpoints: ?WatchpointManager,
     elf: ?Elf,
     program_path: ?[]const u8,
     current_frame: u32,
@@ -28,6 +33,7 @@ pub const Debugger = struct {
             .allocator = allocator,
             .process = null,
             .breakpoints = BreakpointManager.init(allocator),
+            .watchpoints = null,
             .elf = null,
             .program_path = null,
             .current_frame = 0,
@@ -159,6 +165,82 @@ pub const Debugger = struct {
             try self.breakpoints.remove(p, id);
         } else {
             return error.NoProcess;
+        }
+    }
+
+    // ========================================================================
+    // Watchpoint Functions
+    // ========================================================================
+
+    /// Set a watchpoint at the given address.
+    /// Returns the watchpoint index (0-3).
+    pub fn setWatchpoint(self: *Self, addr: u64, condition: WatchCondition, size: WatchSize) !u2 {
+        if (self.process) |p| {
+            // Initialize watchpoint manager if needed
+            if (self.watchpoints == null) {
+                self.watchpoints = WatchpointManager.init(p.pid);
+            }
+            return try self.watchpoints.?.set(addr, condition, size);
+        }
+        return error.NoProcess;
+    }
+
+    /// Remove a watchpoint by index.
+    pub fn removeWatchpoint(self: *Self, index: u2) !void {
+        if (self.watchpoints) |*wm| {
+            try wm.remove(index);
+        } else {
+            return error.NoWatchpoints;
+        }
+    }
+
+    /// Enable a watchpoint.
+    pub fn enableWatchpoint(self: *Self, index: u2) !void {
+        if (self.watchpoints) |*wm| {
+            try wm.enable(index);
+        } else {
+            return error.NoWatchpoints;
+        }
+    }
+
+    /// Disable a watchpoint.
+    pub fn disableWatchpoint(self: *Self, index: u2) !void {
+        if (self.watchpoints) |*wm| {
+            try wm.disable(index);
+        } else {
+            return error.NoWatchpoints;
+        }
+    }
+
+    /// List all watchpoints.
+    pub fn listWatchpoints(self: *Self, writer: anytype) !void {
+        if (self.watchpoints) |*wm| {
+            try wm.list(writer);
+        } else {
+            try writer.print("No watchpoints set.\n", .{});
+        }
+    }
+
+    /// Get a watchpoint by index.
+    pub fn getWatchpoint(self: *Self, index: u2) ?Watchpoint {
+        if (self.watchpoints) |wm| {
+            return wm.get(index);
+        }
+        return null;
+    }
+
+    /// Check if a watchpoint triggered (after SIGTRAP).
+    pub fn checkWatchpointTriggered(self: *Self) !?u2 {
+        if (self.watchpoints) |*wm| {
+            return try wm.checkTriggered();
+        }
+        return null;
+    }
+
+    /// Clear watchpoint triggered status.
+    pub fn clearWatchpointTriggered(self: *Self) !void {
+        if (self.watchpoints) |*wm| {
+            try wm.clearTriggered();
         }
     }
 

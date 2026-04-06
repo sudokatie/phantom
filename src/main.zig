@@ -13,6 +13,10 @@ pub const Debugger = @import("debugger.zig").Debugger;
 pub const Process = @import("process.zig").Process;
 pub const Breakpoint = @import("breakpoint.zig").Breakpoint;
 pub const BreakpointManager = @import("breakpoint.zig").BreakpointManager;
+pub const Watchpoint = @import("watchpoint.zig").Watchpoint;
+pub const WatchpointManager = @import("watchpoint.zig").WatchpointManager;
+pub const WatchCondition = @import("watchpoint.zig").WatchCondition;
+pub const WatchSize = @import("watchpoint.zig").WatchSize;
 pub const Elf = @import("elf.zig").Elf;
 pub const Registers = @import("regs.zig").Registers;
 pub const Cli = @import("cli.zig").Cli;
@@ -190,4 +194,5 @@ test {
     _ = @import("eval.zig");
     _ = @import("dwarf/mod.zig");
     _ = @import("disasm.zig");
+    _ = @import("watchpoint.zig");
 }
