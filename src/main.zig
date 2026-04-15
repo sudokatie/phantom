@@ -22,6 +22,7 @@ pub const Registers = @import("regs.zig").Registers;
 pub const Cli = @import("cli.zig").Cli;
 pub const Evaluator = @import("eval.zig").Evaluator;
 pub const Disassembler = @import("disasm.zig");
+pub const coredump = @import("coredump.zig");
 
 const version = "0.1.0";
 
@@ -195,4 +196,5 @@ test {
     _ = @import("dwarf/mod.zig");
     _ = @import("disasm.zig");
     _ = @import("watchpoint.zig");
+    _ = @import("coredump.zig");
 }
